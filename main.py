@@ -1,68 +1,95 @@
 import os
-from fastapi import FastAPI
+from typing import List
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr
+from datetime import datetime, timezone
 
-app = FastAPI()
+from database import create_document
+from schemas import ContactInquiry
+
+app = FastAPI(title="Fashion Designer Portfolio API", version="1.0.0")
+
+# CORS configuration
+frontend_url = os.getenv("FRONTEND_URL")
+backend_url = os.getenv("BACKEND_URL")
+
+allowed_origins: List[str] = [
+    origin for origin in [
+        frontend_url,
+        backend_url,
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://localhost:3000",
+    ] if origin
+]
+
+# Fallback to wildcard if nothing provided (keeps dev smooth)
+if not allowed_origins:
+    allowed_origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "service": "backend",
+    }
+
+
+@app.get("/")
+def root():
+    return {"message": "Fashion Designer Portfolio Backend", "status": "ok"}
+
 
 @app.get("/test")
 def test_database():
-    """Test endpoint to check if database is available and accessible"""
-    response = {
+    """Simple DB ping using helper module."""
+    resp = {
         "backend": "✅ Running",
         "database": "❌ Not Available",
-        "database_url": None,
-        "database_name": None,
+        "database_url": "❌ Not Set",
+        "database_name": "❌ Not Set",
         "connection_status": "Not Connected",
-        "collections": []
+        "collections": [],
     }
-    
     try:
-        # Try to import database module
         from database import db
-        
+        import os as _os
+        resp["database_url"] = "✅ Set" if _os.getenv("DATABASE_URL") else "❌ Not Set"
+        resp["database_name"] = _os.getenv("DATABASE_NAME") or "❌ Not Set"
         if db is not None:
-            response["database"] = "✅ Available"
-            response["database_url"] = "✅ Configured"
-            response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
-            response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
             try:
-                collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
-                response["database"] = "✅ Connected & Working"
+                resp["collections"] = db.list_collection_names()[:10]
+                resp["database"] = "✅ Connected & Working"
+                resp["connection_status"] = "Connected"
             except Exception as e:
-                response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
+                resp["database"] = f"⚠️ Connected but error: {str(e)[:80]}"
         else:
-            response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
+            resp["database"] = "⚠️ Available but not initialized"
     except Exception as e:
-        response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
-    response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
-    response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
-    return response
+        resp["database"] = f"❌ Error: {str(e)[:80]}"
+    return resp
+
+
+@app.post("/contact")
+def submit_contact(inquiry: ContactInquiry):
+    try:
+        payload = inquiry.model_dump()
+        payload["received_at"] = datetime.now(timezone.utc)
+        doc_id = create_document("contactinquiry", payload)
+        return {"ok": True, "id": doc_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save inquiry: {str(e)}")
 
 
 if __name__ == "__main__":
